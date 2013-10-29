@@ -487,8 +487,9 @@ public class Balancer implements Tool {
   }
   
   /* Return the utilization of a datanode */
-  static private double getUtilization(DatanodeInfo datanode) {
-    return ((double)datanode.getDfsUsed())/datanode.getCapacity()*100;
+  static private double getUtilization(DatanodeInfo datanode, double avgRemaining) {
+//    return ((double)datanode.getDfsUsed())/datanode.getCapacity()*100;
+	  return avgRemaining / datanode.getRemaining() * 100;
   }
   
   /* A class that keeps track of a datanode in Balancer */
@@ -506,16 +507,16 @@ public class Balancer implements Tool {
      * Depending on avgutil & threshold, calculate maximum bytes to move 
      */
     private BalancerDatanode(
-        DatanodeInfo node, double avgUtil, double threshold) {
+        DatanodeInfo node, double avgUtil, double threshold, double avgRemaining) {
       datanode = node;
-      utilization = Balancer.getUtilization(node);
+      utilization = Balancer.getUtilization(node, avgRemaining);
         
       if (utilization >= avgUtil+threshold
           || utilization <= avgUtil-threshold) { 
-        maxSizeToMove = (long)(threshold*datanode.getCapacity()/100);
+        maxSizeToMove = (long)(threshold*datanode.getRemaining()/100);
       } else {
         maxSizeToMove = 
-          (long)(Math.abs(avgUtil-utilization)*datanode.getCapacity()/100);
+          (long)(Math.abs(avgUtil-utilization)*datanode.getRemaining()/100);
       }
       if (utilization < avgUtil ) {
         maxSizeToMove = Math.min(datanode.getRemaining(), maxSizeToMove);
@@ -614,8 +615,8 @@ public class Balancer implements Tool {
             = new ArrayList<BalancerBlock>();
     
     /* constructor */
-    private Source(DatanodeInfo node, double avgUtil, double threshold) {
-      super(node, avgUtil, threshold);
+    private Source(DatanodeInfo node, double avgUtil, double threshold, double avgRemaining) {
+      super(node, avgUtil, threshold, avgRemaining);
     }
     
     /** Add a node task */
@@ -965,15 +966,19 @@ public class Balancer implements Tool {
    */
   private long initNodes(DatanodeInfo[] datanodes) {
     // compute average utilization
-    long totalCapacity=0L, totalUsedSpace=0L;
+    long totalRemaining = 0;
+    int dataNodeNum = 0;
     for (DatanodeInfo datanode : datanodes) {
       if (datanode.isDecommissioned() || datanode.isDecommissionInProgress()) {
         continue; // ignore decommissioning or decommissioned nodes
       }
-      totalCapacity += datanode.getCapacity();
-      totalUsedSpace += datanode.getDfsUsed();
+      totalRemaining += datanode.getRemaining();
+      dataNodeNum ++;
     }
-    this.avgUtilization = ((double)totalUsedSpace)/totalCapacity*100;
+//    this.avgUtilization = ((double)totalUsedSpace)/totalCapacity*100;
+    this.avgUtilization = 100L;
+    double avgRemaining = totalRemaining / dataNodeNum;
+    LOG.info("avg Remaining is " + avgRemaining / (1024 * 1024 * 1024L) + " GB");
 
     /*create network topology and all data node lists: 
      * overloaded, above-average, below-average, and underloaded
@@ -988,8 +993,8 @@ public class Balancer implements Tool {
       }
       cluster.add(datanode);
       BalancerDatanode datanodeS;
-      if (getUtilization(datanode) > avgUtilization) {
-        datanodeS = new Source(datanode, avgUtilization, threshold);
+      if (getUtilization(datanode, avgRemaining) > avgUtilization) {
+        datanodeS = new Source(datanode, avgUtilization, threshold, avgRemaining);
         if (isAboveAvgUtilized(datanodeS)) {
           this.aboveAvgUtilizedDatanodes.add((Source)datanodeS);
         } else {
@@ -997,10 +1002,10 @@ public class Balancer implements Tool {
             datanodeS.getName()+ "is not an overUtilized node";
           this.overUtilizedDatanodes.add((Source)datanodeS);
           overLoadedBytes += (long)((datanodeS.utilization-avgUtilization
-              -threshold)*datanodeS.datanode.getCapacity()/100.0);
+              -threshold)*datanodeS.datanode.getRemaining()/100.0);
         }
       } else {
-        datanodeS = new BalancerDatanode(datanode, avgUtilization, threshold);
+        datanodeS = new BalancerDatanode(datanode, avgUtilization, threshold, avgRemaining);
         if ( isBelowAvgUtilized(datanodeS)) {
           this.belowAvgUtilizedDatanodes.add(datanodeS);
         } else {
@@ -1008,7 +1013,7 @@ public class Balancer implements Tool {
             datanodeS.getName()+ "is not an underUtilized node"; 
           this.underUtilizedDatanodes.add(datanodeS);
           underLoadedBytes += (long)((avgUtilization-threshold-
-              datanodeS.utilization)*datanodeS.datanode.getCapacity()/100.0);
+              datanodeS.utilization)*datanodeS.datanode.getRemaining()/100.0);
         }
       }
       this.datanodes.put(datanode.getStorageID(), datanodeS);
